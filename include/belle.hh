@@ -98,6 +98,10 @@ SOFTWARE.
 #ifdef OB_BELLE_CONFIG_SSL_ON
 #include <boost/asio/ssl/error.hpp>
 #include <boost/asio/ssl/stream.hpp>
+//
+#include <boost/beast/ssl.hpp>
+#include <boost/beast/websocket.hpp>
+#include <boost/beast/websocket/ssl.hpp>
 #endif // OB_BELLE_CONFIG_SSL_ON
 
 #include <boost/config.hpp>
@@ -408,7 +412,13 @@ inline std::string to_string(T const& t)
   return ss.str();
 }
 
-#ifdef OB_BELLE_CONFIG_SSL_ON
+// not sure what the minimum beast version that would work is
+// so maybe this can be reduced (I'm using boost 1.73)
+#if defined(OB_BELLE_CONFIG_SSL_ON) && (BOOST_BEAST_VERSION>290)
+template<typename Next_Layer>
+using ssl_stream = boost::beast::ssl_stream<Next_Layer>;
+
+#elif defined(OB_BELLE_CONFIG_SSL_ON)
 // TODO switch to boost::beast::ssl_stream when it moves out of experimental
 template<typename Next_Layer>
 class ssl_stream : public ssl::stream_base
@@ -615,11 +625,11 @@ public:
   }
 
   template<typename SyncStream>
-  friend void teardown(websocket::role_type,
+  friend void teardown(beast::role_type,
     ssl_stream<SyncStream>& stream, error_code& ec);
 
   template<typename AsyncStream, typename TeardownHandler>
-  friend void async_teardown(websocket::role_type,
+  friend void async_teardown(beast::role_type,
     ssl_stream<AsyncStream>& stream, TeardownHandler&& handler);
 
 private:
@@ -628,14 +638,14 @@ private:
 }; // class ssl_stream
 
 template<typename SyncStream>
-inline void teardown(websocket::role_type role,
+inline void teardown(beast::role_type role,
   ssl_stream<SyncStream>& stream, error_code& ec)
 {
   websocket::teardown(role, *stream._ptr, ec);
 }
 
 template<typename AsyncStream, typename TeardownHandler>
-inline void async_teardown(websocket::role_type role,
+inline void async_teardown(beast::role_type role,
   ssl_stream<AsyncStream>& stream, TeardownHandler&& handler)
 {
   websocket::async_teardown(role, *stream._ptr, std::forward<TeardownHandler>(handler));
@@ -1415,7 +1425,7 @@ private:
     Websocket(tcp::socket&& socket_, std::shared_ptr<Attr> const attr_,
       Request&& req_, fns_on_websocket const& on_websocket_) :
       Websocket_Base<Websocket> {
-        static_cast<net::io_context&>(socket_.get_executor().context()), 
+        static_cast<net::io_context&>(socket_.get_executor().context()),
         attr_, std::move(req_), on_websocket_},
       _socket {std::move(socket_)}
     {
@@ -1475,8 +1485,11 @@ private:
 
     Websockets(Detail::ssl_stream<tcp::socket>&& socket_, std::shared_ptr<Attr> const attr_,
       Request&& req_, fns_on_websocket const& on_websocket_) :
-      Websocket_Base<Websockets> {socket_.get_executor().context(), attr_,
-        std::move(req_), on_websocket_},
+      Websocket_Base<Websockets> {
+          static_cast<net::io_context&>(socket_.get_executor().context()),
+          attr_,
+          std::move(req_),
+          on_websocket_},
       _socket {std::move(socket_)}
     {
     }
@@ -2080,7 +2093,9 @@ private:
   public:
 
     Https(tcp::socket&& socket_, std::shared_ptr<Attr> const attr_) :
-      Http_Base<Https, Websockets> {socket_.get_executor().context(), attr_},
+      Http_Base<Https, Websockets> {
+          static_cast<net::io_context&>(socket_.get_executor().context()),
+          attr_},
       _socket {std::move(socket_), attr_->ssl_context}
     {
       this->_close = true;
@@ -2996,8 +3011,7 @@ public:
         return;
       }
 
-      // connect to the endpoint
-      net::async_connect(derived().socket().lowest_layer(),
+      net::async_connect(boost::beast::get_lowest_layer(derived().socket()),
         results_.begin(), results_.end(),
         net::bind_executor(_strand,
           [self = derived().shared_from_this()](error_code ec, auto)
